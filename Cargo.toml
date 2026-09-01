@@ -1,0 +1,16 @@
+[package]
+name = "emotune"
+version = "0.1.0"
+edition = "2021"
+description = "Generative chiptune mood-melody daemon"
+
+[dependencies]
+cpal = "0.15"
+rosc = "0.10"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+rand = { version = "0.8", features = ["small_rng"] }
+
+[profile.release]
+lto = true
+strip = true
