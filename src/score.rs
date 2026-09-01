@@ -20,6 +20,7 @@ pub struct Score {
     pub humanize: f64,
     #[serde(default)]
     pub fx: FxCfg,
+    #[serde(default)]
     pub tracks: Vec<Track>,
     pub structure: Option<String>,
     #[serde(default)]
@@ -106,12 +107,63 @@ pub struct TrackStat {
 /// Parse a v2 score into scheduled events, FX settings, and a report.
 /// Structural mistakes are errors; musical smells become report warnings.
 pub fn parse(text: &str) -> Result<(Vec<Event>, FxCfg, Report), String> {
-    let score: Score = toml::from_str(text).map_err(|e| e.to_string())?;
+    let mut score: Score = toml::from_str(text).map_err(|e| e.to_string())?;
+    // TOML footgun absorbed: `structure = "A B"` written below any [table]
+    // header lands inside that table, not at top level. Models naturally state
+    // the arrangement after [fx] or the sections, so recover it from the text.
+    if score.structure.is_none() {
+        for line in text.lines() {
+            if let Some(v) = line
+                .trim()
+                .strip_prefix("structure")
+                .and_then(|r| r.trim_start().strip_prefix('='))
+            {
+                let v = v.trim().trim_matches(|c| c == '"' || c == '\'');
+                if !v.is_empty() {
+                    score.structure = Some(v.to_string());
+                    break;
+                }
+            }
+        }
+    }
+    // and drop stray copies swallowed into sections so they don't read as tracks
+    for sec in score.sections.values_mut() {
+        sec.remove("structure");
+    }
     if !(20.0..=300.0).contains(&score.tempo) {
         return Err(format!("tempo {} outside 20..=300", score.tempo));
     }
+    // No [[tracks]] but sections keyed by voice names: infer default tracks.
     if score.tracks.is_empty() {
-        return Err("score has no tracks".into());
+        const VOICES: [&str; 8] =
+            ["tone", "soft", "womp", "bell", "wobble", "kick", "snare", "hat"];
+        let mut seen: Vec<String> = Vec::new();
+        for sec in score.sections.values() {
+            for k in sec.keys() {
+                if !seen.contains(k) {
+                    seen.push(k.clone());
+                }
+            }
+        }
+        if seen.is_empty() {
+            return Err("score has no tracks".into());
+        }
+        for k in seen {
+            if !VOICES.contains(&k.as_str()) {
+                return Err(format!(
+                    "no [[tracks]] defined and section key {k:?} is not a voice name"
+                ));
+            }
+            score.tracks.push(Track {
+                name: Some(k.clone()),
+                voice: k,
+                amp: default_amp(),
+                pan: 0.0,
+                bend: default_bend(),
+                rate: default_rate(),
+                notes: None,
+            });
+        }
     }
     let mut warnings = Vec::new();
     let names: Vec<String> = score

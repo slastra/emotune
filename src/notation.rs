@@ -51,6 +51,25 @@ impl<'a> Parser<'a> {
                     return Err(format!("')' without '(' at token {}", self.i + 1));
                 }
                 self.i += 1;
+                // `):d` time-squashes the group to d beats (models write
+                // `(c4+e4+g4):0.5` expecting parens + duration to combine)
+                if let Some(d) = rest.strip_prefix(':') {
+                    let d: f64 = d.parse().map_err(|_| format!("bad duration {rest:?}"))?;
+                    if !(0.05..=16.0).contains(&d) {
+                        return Err(format!("duration {d} outside 0.05..=16"));
+                    }
+                    let span = cursor - start;
+                    if span <= 0.0 {
+                        return Err("empty '():dur' group".into());
+                    }
+                    let k = d / span;
+                    for n in out.iter_mut().filter(|n| n.beat >= start - 1e-9) {
+                        n.beat = start + (n.beat - start) * k;
+                        n.dur *= k;
+                    }
+                    self.dur = d;
+                    return Ok(start + d);
+                }
                 let count: usize = match rest.strip_prefix('x') {
                     Some(n) => n
                         .parse()
@@ -84,22 +103,9 @@ impl<'a> Parser<'a> {
 
     /// Parse one note/rest token starting at `beat`; returns the new cursor.
     fn token(&mut self, tok: &str, beat: f64, out: &mut Vec<NoteEv>) -> Result<f64, String> {
-        // trailing modifiers, any order
+        // modifiers may sit before or after :dur (`x?:0.5` and `x:0.5?` both occur)
         let (mut amp_mul, mut bend) = (1.0, false);
-        let mut body = tok;
-        loop {
-            body = match body.strip_suffix(['!', '?', '~']) {
-                Some(b) => {
-                    match body.as_bytes()[body.len() - 1] {
-                        b'!' => amp_mul = 1.3,
-                        b'?' => amp_mul = 0.6,
-                        _ => bend = true,
-                    }
-                    b
-                }
-                None => break,
-            };
-        }
+        let mut body = strip_mods(tok, &mut amp_mul, &mut bend);
         // optional :dur (sticky)
         if let Some((left, d)) = body.split_once(':') {
             let d: f64 = d.parse().map_err(|_| format!("bad duration in {tok:?}"))?;
@@ -110,10 +116,13 @@ impl<'a> Parser<'a> {
             body = left;
         }
         let dur = self.dur;
+        body = strip_mods(body, &mut amp_mul, &mut bend);
         if body == "r" {
             return Ok(beat + dur);
         }
         for part in body.split('+') {
+            let (mut amp_mul, mut bend) = (amp_mul, bend);
+            let part = strip_mods(part, &mut amp_mul, &mut bend);
             let pitch = if part == "x" {
                 self.perc_pitch
             } else {
@@ -125,6 +134,19 @@ impl<'a> Parser<'a> {
         }
         Ok(beat + dur)
     }
+}
+
+/// Peel `!` / `?` / `~` off the end of a token piece, recording their effect.
+fn strip_mods<'a>(mut body: &'a str, amp_mul: &mut f64, bend: &mut bool) -> &'a str {
+    while let Some(b) = body.strip_suffix(['!', '?', '~']) {
+        match body.as_bytes()[body.len() - 1] {
+            b'!' => *amp_mul = 1.3,
+            b'?' => *amp_mul = 0.6,
+            _ => *bend = true,
+        }
+        body = b;
+    }
+    body
 }
 
 /// Duplicate the group's events `count-1` more times; returns the final end beat.
@@ -224,6 +246,27 @@ mod tests {
         let (n, _) = parse("x:0.5 | x! r x?", 38).unwrap();
         assert_eq!(n.len(), 3);
         assert!(n.iter().all(|x| x.pitch == 38));
+    }
+
+    #[test]
+    fn group_duration() {
+        // parens + :dur = squash the group into that many beats
+        let (n, end) = parse("(c4+e4+g4):0.5 c4", 36).unwrap();
+        assert_eq!(end, 1.0);
+        assert!(n[..3].iter().all(|x| x.beat == 0.0 && x.dur == 0.5));
+        assert_eq!(n[3].beat, 0.5); // sticky dur updated by the group
+        let (n2, end2) = parse("(c4 d4):1", 36).unwrap();
+        assert_eq!(end2, 1.0);
+        assert_eq!(n2[1].beat, 0.5);
+    }
+
+    #[test]
+    fn mods_before_dur() {
+        let (n, _) = parse("x?:0.5 c4!:2 e4~+g4", 38).unwrap();
+        assert_eq!(n[0].amp_mul, 0.6);
+        assert_eq!(n[0].dur, 0.5);
+        assert_eq!(n[1].amp_mul, 1.3);
+        assert!(n[2].bend && !n[3].bend);
     }
 
     #[test]

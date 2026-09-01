@@ -40,10 +40,12 @@ Whitespace-separated tokens; each note advances the cursor by its duration.
 | `~` | apply the track's `bend` to this note |
 | `c4+e4+g4` | chord (shared start and duration) |
 | `(...)x4` | repeat group, nestable to 4 |
+| `(...):2` | time-squash the group into 2 beats (also sets the sticky dur) |
 | `\|` | barline, ignored (readability only) |
 
-`x:0.5 x! r x?` is a bar of drums. `(c5 e5 g5):0.5` then `x2` arpeggiates
-twice. Modifiers and duration combine: `g#5:1.5!`.
+`x:0.5 x! r x?` is a bar of drums. `(c5 e5 g5)x2` repeats the figure twice.
+Modifiers combine with durations in either order: `g#5:1.5!` and `g#5!:1.5`
+both work.
 
 ## Sections
 
@@ -62,6 +64,12 @@ melody = "f5 e5 c5:2"
 
 Section length = its longest track; sections play back to back in `structure`
 order. With `structure` present, tracks must not carry `notes` directly.
+
+Forgiving corners, learned from real LLM output: a `structure = ...` line that
+TOML would swallow into a preceding `[table]` is recovered from the text, and
+if there are no `[[tracks]]` at all, section keys that are voice names get
+default tracks inferred. Still, put `structure` at the top and declare tracks
+when you want non-default amp/pan/bend.
 
 ## The report
 
