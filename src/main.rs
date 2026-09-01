@@ -1,5 +1,6 @@
 mod classify;
 mod gen;
+mod notation;
 mod recipes;
 mod score;
 mod synth;
@@ -19,7 +20,9 @@ const USAGE: &str = "emotune — send a feeling, hear a melody.
 Usage:
   emotune daemon                     run the synth daemon
   emotune start|stop|restart|status  manage emotune.service
-  emotune play [--check] <score.toml|->  play (or just validate) a composed score
+  emotune play [--check] [--json] <score.toml|->
+                                     play a composed score; --check analyzes
+                                     without playing, --json for machines
   emotune \"major success\"            play a mood for any phrase";
 
 fn main() {
@@ -38,19 +41,20 @@ fn main() {
             exit(status.code().unwrap_or(1));
         }
         "play" => {
-            let check = args.get(1).map(|a| a == "--check").unwrap_or(false);
-            let Some(path) = args.get(if check { 2 } else { 1 }) else {
+            let check = args.iter().any(|a| a == "--check");
+            let json = args.iter().any(|a| a == "--json");
+            let Some(path) = args[1..].iter().find(|a| !a.starts_with("--")) else {
                 eprintln!("{USAGE}");
                 exit(1);
             };
-            play(path, check);
+            play(path, check, json);
         }
         _ => send("/emotune", &args.join(" ")),
     }
 }
 
 /// Validate a score locally, then (unless --check) hand it to the daemon.
-fn play(path: &str, check_only: bool) {
+fn play(path: &str, check_only: bool, json: bool) {
     let text = if path == "-" {
         let mut s = String::new();
         std::io::stdin().read_to_string(&mut s).expect("read stdin");
@@ -62,11 +66,17 @@ fn play(path: &str, check_only: bool) {
         })
     };
     match score::parse(&text) {
-        Ok((events, _)) => {
+        Ok((events, _, report)) => {
             if !check_only {
                 send("/emotune/score", &text);
             }
-            println!("score ok: {} events", events.len());
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report).expect("report json"));
+            } else if check_only {
+                print!("{}", report.render());
+            } else {
+                println!("score ok: {} events, {:.1}s", events.len(), report.seconds);
+            }
         }
         Err(e) => {
             eprintln!("emotune: bad score: {e}");
@@ -122,7 +132,7 @@ fn daemon() {
                 }
             }
             "/emotune/score" => match score::parse(&arg) {
-                Ok((events, fx)) => {
+                Ok((events, fx, _)) => {
                     println!("emotune: score ({} events)", events.len());
                     tx.send((events, fx)).ok();
                 }
