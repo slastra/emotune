@@ -9,6 +9,7 @@ const MOODS: &[(&str, &[&str])] = &[
     ("thinking", &["thinking", "hmm", "pondering", "working on", "searching"]),
     ("progress", &["progress", "milestone", "step", "halfway", "building"]),
     ("goodbye", &["bye", "goodnight", "shutting down", "later", "signing off"]),
+    ("hello", &["hello", "welcome", "good morning", "howdy", "i'm back"]),
 ];
 
 pub fn classify(phrase: &str) -> &'static str {

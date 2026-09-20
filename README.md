@@ -10,7 +10,7 @@ emotune "should I deploy?"     # unresolved rise
 ```
 
 Keywords in the phrase map to a mood (`success`, `big_success`, `error`,
-`warning`, `question`, `thinking`, `progress`, `goodbye`, `info`), and each
+`warning`, `question`, `thinking`, `progress`, `hello`, `goodbye`, `info`), and each
 mood improvises a fresh melody from a recipe: a scale, a drift direction, a
 note-count range, a resolution degree. Same feeling, never the same tune.
 

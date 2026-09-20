@@ -73,6 +73,16 @@ dur = [0.09, 0.12]
 synth = "tone"
 amp = 0.18
 
+[hello]
+scale = [0, 2, 4, 5, 7, 9, 11]
+dir = 1
+base = 67
+notes = [3, 4]
+dur = [0.14, 0.2]
+end = 12
+synth = "soft"
+amp = 0.18
+
 [goodbye]
 scale = [0, 2, 4, 5, 7, 9, 11]
 dir = -1
