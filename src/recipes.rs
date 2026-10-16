@@ -19,18 +19,17 @@ pub struct Recipe {
 
 const DEFAULT: &str = include_str!("../recipes.toml");
 
-/// Load recipes: ~/.config/emotune/recipes.toml if present, else the compiled-in set.
+/// Load recipes: the compiled-in set, with ~/.config/emotune/recipes.toml merged
+/// over it (a user recipe replaces the built-in of the same name; new names add).
 pub fn load() -> HashMap<String, Recipe> {
-    let user = std::env::var("HOME")
-        .map(|h| format!("{h}/.config/emotune/recipes.toml"))
-        .ok()
-        .and_then(|p| std::fs::read_to_string(p).ok());
-    let text = user.as_deref().unwrap_or(DEFAULT);
-    match toml::from_str(text) {
-        Ok(map) => map,
-        Err(e) => {
-            eprintln!("emotune: bad recipes.toml ({e}); using built-in");
-            toml::from_str(DEFAULT).expect("built-in recipes.toml is valid")
-        }
+    let mut map: HashMap<String, Recipe> =
+        toml::from_str(DEFAULT).expect("built-in recipes.toml is valid");
+    let Ok(home) = std::env::var("HOME") else { return map };
+    let path = format!("{home}/.config/emotune/recipes.toml");
+    let Ok(text) = std::fs::read_to_string(&path) else { return map };
+    match toml::from_str::<HashMap<String, Recipe>>(&text) {
+        Ok(user) => map.extend(user),
+        Err(e) => eprintln!("emotune: bad {path} ({e}); using built-in recipes only"),
     }
+    map
 }

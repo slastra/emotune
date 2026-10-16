@@ -55,8 +55,9 @@ With the unit installed, `emotune start|stop|restart|status` wraps systemctl.
 
 ## Customizing
 
-Mood recipes live in `recipes.toml` (compiled in;
-`~/.config/emotune/recipes.toml` overrides at runtime, no rebuild).
+Mood recipes live in `recipes.toml` (compiled in). Recipes in
+`~/.config/emotune/recipes.toml` merge over them at startup: the same name
+replaces a built-in, a new name adds a mood. `emotune restart` to reload, no rebuild.
 Timbres and effects are in `src/synth.rs`.
 
 ## License
