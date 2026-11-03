@@ -1,103 +1,208 @@
-# emotune mood recipes — ported from daemon.scd ~moods.
-# scale = semitone set, dir = melodic drift (1 up / -1 down / 0 wander),
-# base = midinote, notes = [min,max] count, dur = [min,max] sec per note,
-# end = resolution degree (omit to leave hanging), synth = tone|womp|soft.
+# emotune mood recipes. Each recipe is a small score (docs/score.md): a motif
+# you learn to recognise, written as 1-3 variants, plus a `vary` table so no
+# two performances are identical. One variant index is shared by all tracks.
+#
+# Families, so you can tell who spoke without looking:
+#   Claude Code + general moods   pulse lead, key of C
+#   deskdoc / deskvoice (doc_*)   triangle lead, key of E
+#   presence (hello / goodbye)    arp chords over a triangle bass
+#
+# ~/.config/emotune/recipes.toml merges over these by name; restart to reload.
 
-[success]
-scale = [0, 2, 4, 5, 7, 9, 11]
-dir = 1
-base = 72
-notes = [3, 5]
-dur = [0.08, 0.14]
-end = 7
-synth = "tone"
-amp = 0.22
+# --- general moods --------------------------------------------------------
 
-[big_success]
-scale = [0, 2, 4, 5, 7, 9, 11]
-dir = 1
-base = 72
-notes = [6, 9]
-dur = [0.07, 0.11]
-end = 14
-synth = "tone"
-amp = 0.25
-arp = true
-
-[error]
-scale = [0, 1, 3, 5, 7, 8, 10]
-dir = -1
-base = 62
-notes = [3, 4]
-dur = [0.18, 0.26]
-end = -7
-synth = "womp"
-amp = 0.28
-
-[warning]
-scale = [0, 2, 3, 5, 7, 8, 10]
-dir = 0
-base = 76
-notes = [2, 3]
-dur = [0.13, 0.18]
-end = -1
-synth = "tone"
-amp = 0.2
-bend = 0.917
-
-[question]
-scale = [0, 2, 4, 5, 7, 9, 11]
-dir = 1
-base = 67
-notes = [2, 4]
-dur = [0.12, 0.16]
-synth = "tone"
-amp = 0.2
-bend = 1.122
-
-[thinking]
-scale = [0, 2, 3, 5, 7, 9, 10]
-dir = 0
-base = 69
-notes = [4, 7]
-dur = [0.12, 0.22]
-synth = "soft"
-amp = 0.16
-
-[progress]
-scale = [0, 2, 4, 7, 9]
-dir = 1
-base = 69
-notes = [3, 3]
-dur = [0.09, 0.12]
-synth = "tone"
-amp = 0.18
-
-[hello]
-scale = [0, 2, 4, 5, 7, 9, 11]
-dir = 1
-base = 67
-notes = [3, 4]
-dur = [0.14, 0.2]
-end = 12
-synth = "soft"
-amp = 0.18
-
-[goodbye]
-scale = [0, 2, 4, 5, 7, 9, 11]
-dir = -1
-base = 79
-notes = [3, 4]
-dur = [0.14, 0.2]
-end = -12
-synth = "soft"
-amp = 0.18
-
+# Every Claude Code turn ends with this one, so it is short and quiet: a
+# rising fifth, sometimes with a passing third.
 [info]
-scale = [0, 2, 4, 7, 9]
-dir = 1
-base = 79
-notes = [2, 2]
-dur = [0.09, 0.12]
-synth = "tone"
-amp = 0.18
+tempo = 300
+vary = { transpose = [0, 0, 0, 2, -3], tempo = 0.05 }
+fx = { feedback = 0.25, verb = 0.14 }
+tracks = [
+  { voice = "pulse", amp = 0.13, duty = 0.125, notes = [
+      "g5:0.25 d6:0.75",
+      "g5:0.25 d6:0.75",
+      "g5:0.25 b5?:0.25 d6:0.5",
+  ] },
+]
+
+# Permission prompt: an upward inflection that never resolves.
+[question]
+tempo = 280
+vary = { transpose = [0, 0, 2], tempo = 0.04 }
+tracks = [
+  { voice = "pulse", amp = 0.17, duty = 0.25, bend = 1.06, notes = [
+      "c6:0.5 g6~:1.25",
+      "c6:0.25 e6 g6~:1.25",
+  ] },
+]
+
+# Up the major triad to the octave, a triangle root underneath.
+[success]
+tempo = 320
+vary = { transpose = [0, 0, 2, -3], tempo = 0.05, grace = 0.25 }
+tracks = [
+  { voice = "pulse", amp = 0.17, duty = 0.125, notes = [
+      "c6:0.25 e6 g6 c7:1",
+      "c6:0.25 g6 e6 c7:1",
+      "g5:0.25 c6 e6 g6 c7:1",
+  ] },
+  { voice = "tri", amp = 0.14, notes = [
+      "c4:0.75 c5:1",
+      "c4:0.75 c5:1",
+      "g3:0.25 c4:0.75 c5:1",
+  ] },
+]
+
+# The fanfare: lead, arp chords, triangle bass and a noise crash.
+[big_success]
+tempo = 300
+vary = { tempo = 0.03 }
+fx = { echo = 0.2, feedback = 0.3, verb = 0.24 }
+tracks = [
+  { voice = "pulse", amp = 0.17, duty = 0.125, notes = [
+      "c6:0.25 r c6 d6 e6:0.5 g6:0.25 e6 c7!:2",
+      "g5:0.25 r c6 d6 e6:0.5 g6:0.25 a6 c7!:2",
+  ] },
+  { voice = "arp", amp = 0.09, pan = -0.25, notes = [
+      "c5+e5+g5:1 a4+c5+f5:1 b4+d5+g5:1 c5+e5+g5:1.5",
+      "c5+e5+g5:1 a4+c5+f5:1 b4+d5+g5:1 c5+e5+g5:1.5",
+  ] },
+  { voice = "tri", amp = 0.15, notes = "c3:1 f3 g3 c4:1.5" },
+  { voice = "noise", amp = 0.08, pan = 0.25, notes = "c6!:0.5 r:2.5 c6!:2" },
+]
+
+# "Uh-oh": a falling minor third whose second note sags, on a hollow square.
+[error]
+tempo = 220
+vary = { transpose = [0, 0, -2], tempo = 0.04 }
+tracks = [
+  { voice = "pulse", amp = 0.19, duty = 0.5, bend = 0.944, notes = [
+      "d5:0.5 b4~:1.5",
+      "d5:0.25 d5:0.25 b4~:1.5",
+  ] },
+  { voice = "tri", amp = 0.16, notes = ["g2:0.5 e2:1.5", "g2:0.5 e2:1.5"] },
+  { voice = "noise", amp = 0.06, notes = "c4:0.5" },
+]
+
+# Two-tone alternation, thin pulse, the last note drooping.
+[warning]
+tempo = 300
+vary = { transpose = [0, 0, -2], tempo = 0.04 }
+tracks = [
+  { voice = "pulse", amp = 0.16, duty = 0.125, bend = 0.97, notes = [
+      "a5:0.5 f5 a5 f5~:1",
+      "a5:0.25 a5:0.25 f5:0.5 a5 f5~:1",
+  ] },
+]
+
+# Quiet triangle noodling around the fifth.
+[thinking]
+tempo = 340
+vary = { transpose = [0, 2, -2], tempo = 0.06 }
+tracks = [
+  { voice = "tri", amp = 0.1, notes = [
+      "e5:0.25 g5 a5 g5:0.5",
+      "a5:0.25 g5 e5 g5:0.5",
+      "e5:0.25 a5 g5 a5:0.5",
+  ] },
+]
+
+# Three steps up.
+[progress]
+tempo = 320
+vary = { transpose = [0, 0, 2, 5], tempo = 0.04 }
+tracks = [
+  { voice = "pulse", amp = 0.15, duty = 0.25, notes = [
+      "c6:0.25 d6 e6:0.75",
+      "c6:0.25 d6 e6:0.25 g6?:0.5",
+  ] },
+]
+
+# --- presence (deskpresence: arrive / leave) --------------------------------
+
+# Welcome back: the chords climb and land open.
+[hello]
+tempo = 240
+vary = { transpose = [0, 0, 2, -1], tempo = 0.04 }
+tracks = [
+  { voice = "arp", amp = 0.1, notes = [
+      "c5+e5+g5:0.5 c5+f5+a5:0.5 e5+g5+c6:1.25",
+      "c5+e5+g5:0.5 d5+g5+b5:0.5 e5+g5+c6:1.25",
+  ] },
+  { voice = "tri", amp = 0.13, notes = [
+      "c4:0.5 f4:0.5 c5:1.25",
+      "c4:0.5 g4:0.5 c5:1.25",
+  ] },
+]
+
+# The mirror: the same chords stepping down and closing low.
+[goodbye]
+tempo = 220
+vary = { transpose = [0, 0, -2], tempo = 0.04 }
+fx = { verb = 0.26 }
+tracks = [
+  { voice = "arp", amp = 0.1, notes = [
+      "e5+g5+c6:0.5 c5+f5+a5:0.5 c5+e5+g5:1.5",
+      "e5+g5+c6:0.5 d5+g5+b5:0.5 c5+e5+g5:1.5",
+  ] },
+  { voice = "tri", amp = 0.13, notes = [
+      "c5:0.5 f4:0.5 c4:1.5",
+      "c5:0.5 g4:0.5 c4:1.5",
+  ] },
+]
+
+# --- deskdoc / deskvoice cues (deskvoice config [cues.names]) ---------------
+
+# Wake word heard: an octave leap, instantly.
+[doc_listen]
+tempo = 300
+tracks = [{ voice = "tri", amp = 0.17, notes = "e5:0.25 e6:0.75" }]
+
+# The brain is working: one soft tick.
+[doc_thinking]
+tempo = 300
+vary = { transpose = [0, 2, -3] }
+tracks = [{ voice = "tri", amp = 0.12, notes = "b5:0.5" }]
+
+# Done: up the E major triad.
+[doc_ok]
+tempo = 320
+vary = { tempo = 0.04, grace = 0.2 }
+tracks = [{ voice = "tri", amp = 0.16, notes = [
+    "e6:0.25 g#6 b6:0.75",
+    "b5:0.25 e6 g#6:0.75",
+] }]
+
+# Asking yes or no: a rising, bent fourth.
+[doc_confirm]
+tempo = 280
+tracks = [{ voice = "tri", amp = 0.17, bend = 1.06, notes = "b5:0.5 e6~:1" }]
+
+# Refused (a gated shell command): a step down that sags.
+[doc_blocked]
+tempo = 260
+tracks = [{ voice = "tri", amp = 0.16, bend = 0.97, notes = "e5:0.5 d5~:1" }]
+
+# Something failed: the error shape in the deskdoc voice, with a thud.
+[doc_error]
+tempo = 220
+tracks = [
+  { voice = "tri", amp = 0.18, bend = 0.944, notes = "e5:0.5 c5~:1.25" },
+  { voice = "noise", amp = 0.06, notes = "c4:0.5" },
+]
+
+# Didn't catch that: the same note twice, the second one shrugging.
+[doc_nomatch]
+tempo = 300
+vary = { transpose = [0, -2] }
+tracks = [{ voice = "tri", amp = 0.17, notes = "b5:0.25 r:0.125 b5?:0.625" }]
+
+# Conversation over: down the triad.
+[doc_bye]
+tempo = 300
+tracks = [{ voice = "tri", amp = 0.14, notes = "b6:0.25 e6:0.25 b5:0.75" }]
+
+# Dictation started: a shimmering arp chord, distinct from the wake leap.
+[doc_dictate]
+tempo = 280
+tracks = [{ voice = "arp", amp = 0.22, duty = 0.125, notes = "e5+g#5+b5+e6:1" }]

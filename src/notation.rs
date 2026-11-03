@@ -28,7 +28,12 @@ pub fn parse(src: &str, perc_pitch: i32) -> Result<(Vec<NoteEv>, f64), String> {
     // pad group delimiters so "(c4" and "e4)x2" tokenize cleanly
     let spaced = src.replace('(', " ( ").replace(')', " )");
     let toks: Vec<&str> = spaced.split_whitespace().filter(|t| *t != "|").collect();
-    let mut p = Parser { toks, i: 0, dur: 1.0, perc_pitch };
+    let mut p = Parser {
+        toks,
+        i: 0,
+        dur: 1.0,
+        perc_pitch,
+    };
     let mut out = Vec::new();
     let end = p.seq(0, 0.0, &mut out)?;
     if p.i < p.toks.len() {
@@ -130,7 +135,13 @@ impl<'a> Parser<'a> {
                     format!("bad pitch {part:?} in {tok:?} (want e.g. c4, f#3, bb2, x, r)")
                 })?
             };
-            out.push(NoteEv { beat, pitch, dur, amp_mul, bend });
+            out.push(NoteEv {
+                beat,
+                pitch,
+                dur,
+                amp_mul,
+                bend,
+            });
         }
         Ok(beat + dur)
     }
@@ -196,7 +207,11 @@ pub fn name_of(midi: i32) -> String {
     const NAMES: [&str; 12] = [
         "c", "c#", "d", "d#", "e", "f", "f#", "g", "g#", "a", "a#", "b",
     ];
-    format!("{}{}", NAMES[midi.rem_euclid(12) as usize], midi.div_euclid(12) - 1)
+    format!(
+        "{}{}",
+        NAMES[midi.rem_euclid(12) as usize],
+        midi.div_euclid(12) - 1
+    )
 }
 
 #[cfg(test)]
@@ -227,7 +242,9 @@ mod tests {
     fn chords_and_mods() {
         let (n, _) = parse("c4+e4+g4:2! a4?~", 36).unwrap();
         assert_eq!(n.len(), 4);
-        assert!(n[..3].iter().all(|x| x.beat == 0.0 && x.dur == 2.0 && x.amp_mul == 1.3));
+        assert!(n[..3]
+            .iter()
+            .all(|x| x.beat == 0.0 && x.dur == 2.0 && x.amp_mul == 1.3));
         assert_eq!(n[3].amp_mul, 0.6);
         assert!(n[3].bend);
     }

@@ -1,18 +1,33 @@
-use rand::Rng;
-
-use crate::recipes::Recipe;
-
+/// The synth's voices. `tone` and `soft` are kept as score aliases for
+/// `pulse` and `tri` so older scores pick up the newer chip voices.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum VoiceKind {
-    Tone,
+    /// bandlimited pulse: PWM drift, detuned second osc, delayed vibrato
+    Pulse,
+    /// tracker arpeggio: one pulse voice cycling through a chord
+    Arp,
+    /// 4-bit stepped triangle
+    Tri,
+    /// 15-bit LFSR noise, long mode (hiss)
+    Noise,
+    /// 15-bit LFSR noise, short mode (metallic, tonal)
+    Metal,
     Womp,
-    Soft,
     Kick,
     Snare,
     Hat,
     Bell,
     Wobble,
 }
+
+/// Every voice name a score or recipe may use.
+pub const VOICE_NAMES: [&str; 13] = [
+    "pulse", "tone", "arp", "tri", "soft", "noise", "metal", "womp", "bell", "wobble", "kick",
+    "snare", "hat",
+];
+
+/// Most notes an arp chord can cycle through.
+pub const ARP_MAX: usize = 4;
 
 /// One scheduled note: when it starts (seconds from now) and how it sounds.
 #[derive(Debug, Clone)]
@@ -26,84 +41,35 @@ pub struct Event {
     pub bend: f64,
     /// modulation rate in Hz (wobble LFO); unused by other voices
     pub rate: f64,
+    /// starting pulse width for pulse/arp, 0.05..=0.5
+    pub duty: f64,
+    /// arp chord as semitones above `freq`; first `arp_n` entries are used
+    pub arp: [f32; ARP_MAX],
+    pub arp_n: u8,
 }
 
 pub fn midicps(m: f64) -> f64 {
     440.0 * 2f64.powf((m - 69.0) / 12.0)
 }
 
-/// SC's performDegreeToKey: scale degree → semitones, wrapping into octaves.
-fn degree_to_key(scale: &[i32], degree: i32) -> i32 {
-    let len = scale.len() as i32;
-    let octave = degree.div_euclid(len);
-    scale[degree.rem_euclid(len) as usize] + 12 * octave
-}
-
-pub fn voice_kind(name: &str) -> VoiceKind {
-    match name {
+pub fn voice_kind(name: &str) -> Option<VoiceKind> {
+    Some(match name {
+        "pulse" | "tone" => VoiceKind::Pulse,
+        "arp" => VoiceKind::Arp,
+        "tri" | "soft" => VoiceKind::Tri,
+        "noise" => VoiceKind::Noise,
+        "metal" => VoiceKind::Metal,
         "womp" => VoiceKind::Womp,
-        "soft" => VoiceKind::Soft,
         "kick" => VoiceKind::Kick,
         "snare" => VoiceKind::Snare,
         "hat" => VoiceKind::Hat,
         "bell" => VoiceKind::Bell,
         "wobble" => VoiceKind::Wobble,
-        _ => VoiceKind::Tone,
-    }
+        _ => return None,
+    })
 }
 
-/// Improvise a melody from a recipe: random walk over scale degrees,
-/// drifting in `dir` with occasional back-steps; 40ms timing grid;
-/// last note rings long, carries the bend, or explodes into an arp finale.
-pub fn melody(r: &Recipe, rng: &mut impl Rng) -> Vec<Event> {
-    let kind = voice_kind(&r.synth);
-    let mut deg: i32 = 0;
-    let n = rng.gen_range(r.notes[0]..=r.notes[1]);
-    let steps: [i32; 4] = if r.dir == 0 { [-2, -1, 1, 2] } else { [r.dir, r.dir, 2 * r.dir, -r.dir] };
-    let mut semis: Vec<i32> = (0..n)
-        .map(|_| {
-            let s = degree_to_key(&r.scale, deg);
-            deg += steps[rng.gen_range(0..4)];
-            s
-        })
-        .collect();
-    if let Some(end) = r.end {
-        semis.push(degree_to_key(&r.scale, end));
-    }
-
-    let mut events = Vec::new();
-    let mut t = 0.0;
-    let count = semis.len();
-    for (i, semi) in semis.into_iter().enumerate() {
-        let last = i == count - 1;
-        let wait = ((rng.gen_range(r.dur[0]..=r.dur[1]) / 0.04).round() * 0.04).max(0.04);
-        if last && r.arp {
-            // finale: rapid major-triad arpeggio on the resolution note
-            for k in 0..12 {
-                events.push(Event {
-                    offset: t + k as f64 * 0.045,
-                    kind: VoiceKind::Tone,
-                    freq: midicps((r.base + semi + [0, 4, 7][k % 3]) as f64),
-                    dur: 0.1,
-                    amp: r.amp,
-                    pan: (k % 3) as f64 * 0.3 - 0.3,
-                    bend: 1.0,
-                    rate: 6.0,
-                });
-            }
-        } else {
-            events.push(Event {
-                offset: t,
-                kind,
-                freq: midicps((r.base + semi) as f64),
-                dur: wait * if last { 5.0 } else { 2.0 },
-                amp: r.amp,
-                pan: rng.gen_range(-0.2..0.2),
-                bend: if last { r.bend.unwrap_or(1.0) } else { 1.0 },
-                rate: 6.0,
-            });
-            t += wait;
-        }
-    }
-    events
+/// Unpitched voices: transposition skips them and the report shows no range.
+pub fn is_perc(name: &str) -> bool {
+    matches!(name, "kick" | "snare" | "hat" | "noise" | "metal")
 }

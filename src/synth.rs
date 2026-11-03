@@ -3,12 +3,19 @@ use std::sync::mpsc::Receiver;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
-use crate::gen::{Event, VoiceKind};
+use crate::gen::{Event, VoiceKind, ARP_MAX};
 
 use crate::score::FxCfg;
 
 const ECHO_GAIN: f32 = 0.35;
 const ECHO_MAX_SECS: f64 = 1.0;
+
+/// Chip "tick": stepped envelopes update at this rate, like a tracker frame.
+const FRAME: f64 = 1.0 / 60.0;
+/// Arp chord step.
+const ARP_STEP: f64 = 1.0 / 40.0;
+/// Release tail of the chip voices after their written duration.
+const REL: f64 = 0.07;
 
 struct Voice {
     kind: VoiceKind,
@@ -18,11 +25,36 @@ struct Voice {
     pan: f64,
     bend: f64,
     rate: f64,
+    duty: f64,
+    arp: [f32; ARP_MAX],
+    arp_n: usize,
     t: f64,
     ph1: f64,
     ph2: f64,
     lp: f64,
+    /// stepped envelope, smoothed ~1.5 ms so 60 Hz steps don't click
+    env: f64,
+    lfsr: u16,
     noise: u32,
+}
+
+/// PolyBLEP residual: removes most aliasing from a hard edge at phase 0.
+fn blep(t: f64, dt: f64) -> f64 {
+    if t < dt {
+        let x = t / dt;
+        x + x - x * x - 1.0
+    } else if t > 1.0 - dt {
+        let x = (t - 1.0) / dt;
+        x * x + x + x + 1.0
+    } else {
+        0.0
+    }
+}
+
+/// Bandlimited pulse of width `duty` at phase `ph` advancing `inc` per sample.
+fn pulse(ph: f64, duty: f64, inc: f64) -> f64 {
+    let naive = if ph < duty { 1.0 } else { -1.0 };
+    naive + blep(ph, inc) - blep((ph - duty).rem_euclid(1.0), inc)
 }
 
 impl Voice {
@@ -35,10 +67,15 @@ impl Voice {
             pan: e.pan,
             bend: e.bend,
             rate: e.rate,
+            duty: e.duty,
+            arp: e.arp,
+            arp_n: (e.arp_n as usize).clamp(1, ARP_MAX),
             t: 0.0,
             ph1: 0.0,
             ph2: 0.0,
             lp: 0.0,
+            env: 0.0,
+            lfsr: 1,
             noise: (e.freq.to_bits() as u32) | 1,
         }
     }
@@ -55,9 +92,10 @@ impl Voice {
 
     fn total(&self) -> f64 {
         match self.kind {
-            VoiceKind::Tone => 0.002 + self.dur,
+            VoiceKind::Pulse | VoiceKind::Arp | VoiceKind::Tri => self.dur + REL + 0.01,
+            VoiceKind::Noise | VoiceKind::Metal => self.dur + 0.01,
             VoiceKind::Womp => 0.005 + self.dur,
-            VoiceKind::Soft | VoiceKind::Bell => 0.005 + self.dur * 2.0,
+            VoiceKind::Bell => 0.005 + self.dur * 2.0,
             VoiceKind::Kick | VoiceKind::Snare | VoiceKind::Hat | VoiceKind::Wobble => {
                 0.005 + self.dur
             }
@@ -68,27 +106,85 @@ impl Voice {
         self.t >= self.total()
     }
 
+    /// Tracker-style volume: sampled once per 60 Hz frame and quantized to 16
+    /// levels, then smoothed just enough to keep the steps from clicking.
+    /// Notes hit full, sag toward 0.55, and release over REL after `dur`.
+    fn chip_env(&mut self, t: f64, dt: f64) -> f64 {
+        let tq = (t / FRAME).floor() * FRAME;
+        let sag = |x: f64| 0.55 + 0.45 * (-x / 0.12).exp();
+        let target = if tq < self.dur {
+            sag(tq)
+        } else {
+            sag(self.dur) * (1.0 - (tq - self.dur) / REL).max(0.0)
+        };
+        let target = (target * 15.0).round() / 15.0;
+        self.env += (target - self.env) * (1.0 - (-dt / 0.0015).exp());
+        self.env
+    }
+
+    /// Noise drums decay instead of sustaining.
+    fn noise_env(&mut self, t: f64, dt: f64) -> f64 {
+        let tq = (t / FRAME).floor() * FRAME;
+        let target = ((-tq / (self.dur * 0.35)).exp() * 15.0).round() / 15.0;
+        self.env += (target - self.env) * (1.0 - (-dt / 0.001).exp());
+        self.env
+    }
+
     fn sample(&mut self, dt: f64) -> f64 {
         let t = self.t;
         self.t += dt;
+        let glide = if self.bend == 1.0 {
+            1.0
+        } else {
+            self.bend.powf((t / self.dur).min(1.0))
+        };
         let s = match self.kind {
-            VoiceKind::Tone => {
-                // 25%-duty pulse, 6Hz vibrato, exponential bend glide on the last note
-                let glide = self.bend.powf((t / self.dur).min(1.0));
-                let vib = (TAU * 6.0 * t).sin() * self.freq * 0.006;
-                let f = self.freq * glide + vib;
-                self.ph1 = (self.ph1 + f * dt).fract();
-                let sig = if self.ph1 < 0.25 { 1.0 } else { -1.0 };
-                // env: 2ms attack -> 1, sag to 0.6 over dur*0.4, curved out over dur*0.6
-                let env = if t < 0.002 {
-                    t / 0.002
-                } else if t < 0.002 + self.dur * 0.4 {
-                    1.0 - 0.4 * ((t - 0.002) / (self.dur * 0.4))
-                } else {
-                    let x = ((t - 0.002 - self.dur * 0.4) / (self.dur * 0.6)).min(1.0);
-                    0.6 * (1.0 - x).powi(3)
-                };
-                sig * env * 0.7
+            VoiceKind::Pulse => {
+                // pitch bite on the attack, vibrato only once a note is held
+                let bite = 1.0 + 0.06 * (-t / 0.008).exp();
+                let depth = 0.005 * ((t - 0.12) / 0.15).clamp(0.0, 1.0);
+                let vib = 1.0 + depth * (TAU * 5.5 * t).sin();
+                let f = self.freq * glide * bite * vib;
+                let inc = (f * dt).min(0.45);
+                self.ph1 = (self.ph1 + inc).fract();
+                // PWM: the width drifts from `duty` halfway toward square
+                let duty = self.duty + (0.5 - self.duty) * 0.5 * (t / self.total()).min(1.0);
+                let a = pulse(self.ph1, duty, inc);
+                // a quiet square 6 cents sharp thickens it, SID-style
+                let inc2 = inc * 1.0035;
+                self.ph2 = (self.ph2 + inc2).fract();
+                let b = pulse(self.ph2, 0.5, inc2);
+                (a * 0.78 + b * 0.22) * self.chip_env(t, dt) * 0.6
+            }
+            VoiceKind::Arp => {
+                let step = (t / ARP_STEP) as usize % self.arp_n;
+                let f = self.freq * 2f64.powf(self.arp[step] as f64 / 12.0) * glide;
+                let inc = (f * dt).min(0.45);
+                self.ph1 = (self.ph1 + inc).fract();
+                pulse(self.ph1, self.duty, inc) * self.chip_env(t, dt) * 0.55
+            }
+            VoiceKind::Tri => {
+                // NES-style: the triangle walks 16 steps up and 16 down
+                let depth = 0.004 * ((t - 0.15) / 0.15).clamp(0.0, 1.0);
+                let vib = 1.0 + depth * (TAU * 5.0 * t).sin();
+                self.ph1 = (self.ph1 + self.freq * glide * vib * dt).fract();
+                let tri = 4.0 * (self.ph1 - 0.5).abs() - 1.0;
+                let stepped = ((tri + 1.0) * 7.5).round() / 7.5 - 1.0;
+                stepped * self.chip_env(t, dt) * 0.9
+            }
+            VoiceKind::Noise | VoiceKind::Metal => {
+                // 15-bit LFSR clocked from the note's pitch; metal taps bit 6
+                // instead of bit 1 for the short, ringing 93-step sequence
+                let clock = self.freq * 64.0 * glide;
+                self.ph1 += (clock * dt).min(1.0);
+                if self.ph1 >= 1.0 {
+                    self.ph1 -= 1.0;
+                    let tap = if self.kind == VoiceKind::Metal { 6 } else { 1 };
+                    let fb = (self.lfsr ^ (self.lfsr >> tap)) & 1;
+                    self.lfsr = (self.lfsr >> 1) | (fb << 14);
+                }
+                let s = if self.lfsr & 1 == 1 { 1.0 } else { -1.0 };
+                s * self.noise_env(t, dt) * 0.5
             }
             VoiceKind::Womp => {
                 // two 50% pulses an octave apart, pitch falling, lowpassed
@@ -106,16 +202,6 @@ impl Voice {
                     (1.0 - ((t - 0.005) / self.dur).min(1.0)).powi(3)
                 };
                 self.lp * env * 0.7
-            }
-            VoiceKind::Soft => {
-                self.ph1 = (self.ph1 + self.freq * dt).fract();
-                let sig = 4.0 * (self.ph1 - 0.5).abs() - 1.0;
-                let env = if t < 0.005 {
-                    t / 0.005
-                } else {
-                    (1.0 - ((t - 0.005) / (self.dur * 2.0)).min(1.0)).powi(3)
-                };
-                sig * env
             }
             VoiceKind::Kick => {
                 // pitch-swept sine: 4x freq collapsing to freq, plus a 3ms noise click
@@ -250,6 +336,19 @@ impl Fx {
         self.verb_mix = cfg.verb as f32;
     }
 
+    /// Silence every delay line, so an idle stretch resumes from true zero.
+    fn clear(&mut self) {
+        self.comb.fill(0.0);
+        self.right.fill(0.0);
+        for (buf, _, damp) in &mut self.verb_combs {
+            buf.fill(0.0);
+            *damp = 0.0;
+        }
+        for (buf, _) in &mut self.verb_ap {
+            buf.fill(0.0);
+        }
+    }
+
     fn process(&mut self, l: f32, r: f32) -> (f32, f32) {
         // ping-pong echo: mono sum into a feedback comb; right channel lags by the same delay
         let mono = (l + r) * 0.5;
@@ -288,6 +387,154 @@ impl Fx {
     }
 }
 
+/// The output stage: a DC blocker and a gentle 12 kHz lowpass, roughly what
+/// a console's analog output does to its square waves, then a soft ceiling.
+struct Console {
+    hp_r: f32,
+    lp_a: f32,
+    x1: [f32; 2],
+    y1: [f32; 2],
+    lp: [f32; 2],
+}
+
+impl Console {
+    fn new(sr: f64) -> Self {
+        Console {
+            hp_r: (1.0 - TAU * 25.0 / sr) as f32,
+            lp_a: (1.0 - (-TAU * 12000.0 / sr).exp()) as f32,
+            x1: [0.0; 2],
+            y1: [0.0; 2],
+            lp: [0.0; 2],
+        }
+    }
+
+    fn clear(&mut self) {
+        self.x1 = [0.0; 2];
+        self.y1 = [0.0; 2];
+        self.lp = [0.0; 2];
+    }
+
+    fn process(&mut self, l: f32, r: f32) -> (f32, f32) {
+        let mut ch = |i: usize, x: f32| {
+            let y = x - self.x1[i] + self.hp_r * self.y1[i];
+            self.x1[i] = x;
+            self.y1[i] = y;
+            self.lp[i] += self.lp_a * (y - self.lp[i]);
+            // linear below 0.8, then a tanh knee instead of a hard clip
+            let v = self.lp[i];
+            if v.abs() <= 0.8 {
+                v
+            } else {
+                v.signum() * (0.8 + 0.2 * ((v.abs() - 0.8) / 0.2).tanh())
+            }
+        };
+        (ch(0, l), ch(1, r))
+    }
+}
+
+/// The mixer: schedules events, runs voices through the FX and output stage.
+/// Lives inside the audio callback; also renders offline for tests and
+/// `emotune render`.
+pub struct Engine {
+    sr: f64,
+    fx: Fx,
+    out: Console,
+    voices: Vec<Voice>,
+    /// sorted latest-first, so the next due event is always at the end
+    pending: Vec<(u64, Event)>,
+    now: u64,
+    /// frames since the output last made a sound with no voices playing
+    quiet: u64,
+    /// after this many quiet frames, skip all DSP until the next event
+    idle_after: u64,
+}
+
+impl Engine {
+    pub fn new(sr: f64) -> Self {
+        let idle_after = (sr * 0.25) as u64;
+        Engine {
+            sr,
+            fx: Fx::new(sr),
+            out: Console::new(sr),
+            voices: Vec::with_capacity(64),
+            pending: Vec::with_capacity(2048),
+            now: 0,
+            quiet: idle_after,
+            idle_after,
+        }
+    }
+
+    /// Schedule a batch relative to now and apply its FX settings.
+    pub fn push(&mut self, batch: Vec<Event>, cfg: FxCfg) {
+        self.fx.set(cfg);
+        for e in batch {
+            self.pending
+                .push((self.now + (e.offset * self.sr) as u64, e));
+        }
+        self.pending
+            .sort_unstable_by_key(|p| std::cmp::Reverse(p.0));
+    }
+
+    /// True once everything has played out and the tails have died away.
+    pub fn idle(&self) -> bool {
+        self.voices.is_empty() && self.pending.is_empty() && self.quiet >= self.idle_after
+    }
+
+    /// Fill an interleaved buffer.
+    pub fn fill(&mut self, data: &mut [f32], channels: usize) {
+        if self.idle() {
+            data.fill(0.0);
+            self.now += (data.len() / channels) as u64;
+            return;
+        }
+        let dt = 1.0 / self.sr;
+        for frame in data.chunks_mut(channels) {
+            while self.pending.last().is_some_and(|(at, _)| *at <= self.now) {
+                let (_, e) = self.pending.pop().expect("checked");
+                self.voices.push(Voice::new(&e));
+            }
+            let (mut l, mut r) = (0.0f32, 0.0f32);
+            for v in self.voices.iter_mut() {
+                let s = v.sample(dt) as f32;
+                l += s * (0.5 * (1.0 - v.pan)) as f32;
+                r += s * (0.5 * (1.0 + v.pan)) as f32;
+            }
+            let (wl, wr) = self.fx.process(l, r);
+            let (ol, or) = self.out.process(wl, wr);
+            frame[0] = ol;
+            if channels > 1 {
+                frame[1] = or;
+            }
+            self.now += 1;
+            if self.voices.is_empty() && ol.abs() + or.abs() < 1e-4 {
+                self.quiet += 1;
+                if self.quiet == self.idle_after {
+                    self.fx.clear();
+                    self.out.clear();
+                }
+            } else {
+                self.quiet = 0;
+            }
+        }
+        // finished voices output silence, so pruning per buffer is enough
+        self.voices.retain(|v| !v.done());
+    }
+}
+
+/// Render events offline to interleaved stereo until the engine goes idle
+/// (capped at `max_secs`).
+pub fn render(events: Vec<Event>, cfg: FxCfg, sr: f64, max_secs: f64) -> Vec<f32> {
+    let mut engine = Engine::new(sr);
+    engine.push(events, cfg);
+    let mut out = Vec::new();
+    let mut buf = [0.0f32; 1024];
+    while !engine.idle() && (out.len() as f64) < max_secs * sr * 2.0 {
+        engine.fill(&mut buf, 2);
+        out.extend_from_slice(&buf);
+    }
+    out
+}
+
 /// Start the audio stream. Returns the stream (keep it alive) — event batches
 /// arriving on `rx` (a mood melody or a composed score) are scheduled and
 /// mixed inside the audio callback.
@@ -309,46 +556,16 @@ pub fn start(rx: Receiver<(Vec<Event>, FxCfg)>) -> cpal::Stream {
         .expect("no usable audio output device");
     let sr = config.sample_rate().0 as f64;
     let channels = config.channels() as usize;
-
-    let mut fx = Fx::new(sr);
-    let mut voices: Vec<Voice> = Vec::new();
-    let mut pending: Vec<(u64, Event)> = Vec::new();
-    let mut now: u64 = 0;
-    let dt = 1.0 / sr;
+    let mut engine = Engine::new(sr);
 
     let stream = device
         .build_output_stream(
             &config.into(),
             move |data: &mut [f32], _| {
                 for (batch, cfg) in rx.try_iter() {
-                    fx.set(cfg);
-                    for e in batch {
-                        pending.push((now + (e.offset * sr) as u64, e));
-                    }
+                    engine.push(batch, cfg);
                 }
-                for frame in data.chunks_mut(channels) {
-                    let mut i = 0;
-                    while i < pending.len() {
-                        if pending[i].0 <= now {
-                            voices.push(Voice::new(&pending.swap_remove(i).1));
-                        } else {
-                            i += 1;
-                        }
-                    }
-                    let (mut l, mut r) = (0.0f32, 0.0f32);
-                    for v in voices.iter_mut() {
-                        let s = v.sample(dt) as f32;
-                        l += s * (0.5 * (1.0 - v.pan)) as f32;
-                        r += s * (0.5 * (1.0 + v.pan)) as f32;
-                    }
-                    voices.retain(|v| !v.done());
-                    let (ol, or) = fx.process(l, r);
-                    frame[0] = ol.clamp(-1.0, 1.0);
-                    if channels > 1 {
-                        frame[1] = or.clamp(-1.0, 1.0);
-                    }
-                    now += 1;
-                }
+                engine.fill(data, channels);
             },
             |err| eprintln!("emotune: audio error: {err}"),
             None,

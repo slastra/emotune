@@ -1,8 +1,8 @@
 [package]
 name = "emotune"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
-description = "Generative chiptune mood-melody daemon"
+description = "Chiptune mood-cue daemon: recognisable motifs on pulse, triangle, arp and noise voices"
 
 [dependencies]
 cpal = "0.15"
